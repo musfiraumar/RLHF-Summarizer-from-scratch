@@ -12,10 +12,10 @@ from functools import partial
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from config import SEED
-from models import load_tokenizer, load_causal_lm
-from data import load_sft_splits, load_eval_posts
-from batching import collate_sft, collate_prompts
+from starter.config import SEED
+from starter.models import load_tokenizer, load_causal_lm
+from starter.data import load_sft_splits, load_eval_posts
+from starter.batching import collate_sft, collate_prompts
 from common import token_logprobs, summary_mask, generate_summaries
 
 

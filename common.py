@@ -1,3 +1,4 @@
+import torch
 def token_logprobs(model, input_ids, attention_mask):
     logits = model(input_ids=input_ids, attention_mask=attention_mask).logits
     logits = logits[:, :-1, :]
