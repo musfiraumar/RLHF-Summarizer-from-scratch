@@ -29,7 +29,10 @@ gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU"
 tok = load_tokenizer()
 sft_train, sft_val = load_sft_splits(tok)
 eval_posts = load_eval_posts(tok)
+
 model = load_causal_lm().to(device)
+model.gradient_checkpointing_enable()
+model.config.use_cache = False
 
 os.makedirs("results/figures", exist_ok=True)
 os.makedirs("results/summaries", exist_ok=True)
@@ -83,42 +86,76 @@ print("Baseline validation loss:", baseline_val_loss)
 
 # Training
 optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5)
-
 steps = []
 train_losses = []
-
 val_steps = [0]
 val_losses = [baseline_val_loss]
-
 running_loss = 0
 total_steps = len(train_loader)
-
 start_time = time.time()
 model.train()
 
 for step, batch in enumerate(tqdm(train_loader), start=1):
-    batch = {key: value.to(device) for key, value in batch.items()}
+    batch = {
+        key: value.to(device) for key, value in batch.items()
+    }
+
     optimizer.zero_grad(set_to_none=True)
-    loss = sft_loss(model, batch)
-    loss.backward()
+
+    full_mask = summary_mask(
+        batch["prompt_lens"],
+        batch["attention_mask"]
+    )
+
+    full_token_count = full_mask.sum().float()
+    half = batch["input_ids"].size(0) // 2
+    first_batch = {
+        key: value[:half] for key, value in batch.items()
+    }
+
+    second_batch = {
+        key: value[half:] for key, value in batch.items()
+    }
+    batch_loss = 0
+
+    for micro_batch in [first_batch, second_batch]:
+        lp = token_logprobs(
+            model,
+            micro_batch["input_ids"],
+            micro_batch["attention_mask"]
+        )
+        mask = summary_mask(
+            micro_batch["prompt_lens"],
+            micro_batch["attention_mask"]
+        ).float()
+
+        loss_sum = -(lp * mask).sum()
+        micro_loss = loss_sum / full_token_count
+        micro_loss.backward()
+        batch_loss += micro_loss.item()
 
     torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
     optimizer.step()
-    running_loss += loss.item()
+    running_loss += batch_loss
 
     if step % 50 == 0:
         avg_train_loss = running_loss / 50
         running_loss = 0
         steps.append(step)
         train_losses.append(avg_train_loss)
-        print(f"Step {step} | Train Loss: {avg_train_loss:.4f}")
-
+        print(
+            f"Step {step}/{total_steps} | "
+            f"Train Loss: {avg_train_loss:.4f}"
+        )
     if step % 250 == 0:
         val_loss = evaluate_val(model, val_loader)
         val_steps.append(step)
         val_losses.append(val_loss)
-        print(f"Step {step} | Validation Loss: {val_loss:.4f}")
-total_time = time.time()-start_time
+        print(
+            f"Step {step}/{total_steps} | "
+            f"Validation Loss: {val_loss:.4f}"
+        )
+total_time = time.time() - start_time
 
 # Save model and tokenizer
 model.save_pretrained("checkpoints/sft")
