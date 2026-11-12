@@ -51,7 +51,7 @@ class RewardModel(nn.Module):
 
         last_hidden = hidden[batch_idx, last_idx]
 
-        return self.head(last_hidden).squeeze(-1)
+        return self.head(last_hidden.float()).squeeze(-1)
 
 
 def reward_loss(r_w, r_l):
