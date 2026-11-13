@@ -6,10 +6,15 @@ import time
 import numpy as np
 import torch
 import torch.nn as nn
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent / "starter"))
 from transformers import AutoTokenizer
 from starter import config
 from starter.data import load_sft_splits
-from common import load_causal_lm, load_reward_model, token_logprobs, summary_mask
+from starter.models import load_causal_lm
+from train_reward import load_reward_model
+from common import token_logprobs, summary_mask
 
 
 CLIP_EPS = 0.2
