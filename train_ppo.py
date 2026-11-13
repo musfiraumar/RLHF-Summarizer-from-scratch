@@ -38,9 +38,13 @@ N_HALVES = 2
 PROMPT_MAX_LEN = 448
 GRAD_CKPT = True
 
+DEBUG = "--debug" in sys.argv
+RUN_ITERATIONS = 3 if DEBUG else ITERATIONS
+
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
 SFT_DIR = "checkpoints/sft"
-PPO_DIR = "checkpoints/ppo"
+PPO_DIR = "checkpoints/ppo_debug" if DEBUG else "checkpoints/ppo"
 
 
 def get_prompts(tok):
@@ -235,7 +239,9 @@ def ppo_update(policy, optimizer, batch):
         "policy_loss": 0.0,
         "value_loss": 0.0,
         "entropy": 0.0,
-        "clip_fraction": 0.0
+        "clip_fraction": 0.0,
+        "epoch0_clip": 0.0,
+        "ratio_dev": 0.0
     }
 
     policy.train()
@@ -264,6 +270,23 @@ def ppo_update(policy, optimizer, batch):
                 1 + CLIP_EPS
             )
 
+            clipped_tokens = (
+                (ratio - 1).abs() > CLIP_EPS
+            ).float()
+
+            clip_value = (
+                (clipped_tokens * summary).sum().item()
+                / token_count.item()
+            )
+
+            if epoch == 0:
+                stats["epoch0_clip"] += clip_value
+
+                stats["ratio_dev"] = max(
+                    stats["ratio_dev"],
+                    (ratio - 1).abs().max().item()
+                )
+
             policy_loss = -(
                 torch.min(
                     ratio * advantages,
@@ -287,28 +310,21 @@ def ppo_update(policy, optimizer, batch):
 
             loss.backward()
 
-            with torch.no_grad():
-                stats["policy_loss"] += (
-                    policy_loss.item() / PPO_EPOCHS
-                )
+            stats["policy_loss"] += (
+                policy_loss.item() / PPO_EPOCHS
+            )
 
-                stats["value_loss"] += (
-                    value_loss.item() / PPO_EPOCHS
-                )
+            stats["value_loss"] += (
+                value_loss.item() / PPO_EPOCHS
+            )
 
-                stats["entropy"] += (
-                    entropy_mean.item() / PPO_EPOCHS
-                )
+            stats["entropy"] += (
+                entropy_mean.item() / PPO_EPOCHS
+            )
 
-                clipped_tokens = (
-                    (ratio - 1).abs() > CLIP_EPS
-                ).float()
-
-                stats["clip_fraction"] += (
-                    (clipped_tokens * summary).sum().item()
-                    / token_count.item()
-                    / PPO_EPOCHS
-                )
+            stats["clip_fraction"] += (
+                clip_value / PPO_EPOCHS
+            )
 
         torch.nn.utils.clip_grad_norm_(
             policy.parameters(),
@@ -330,7 +346,12 @@ def save_policy(policy, tok):
 def save_log(log):
     os.makedirs("results", exist_ok=True)
 
-    with open("results/ppo_log.json", "w") as f:
+    filename = (
+        "results/ppo_log_fp32_debug.json"
+        if DEBUG else "results/ppo_log_fp32.json"
+    )
+
+    with open(filename, "w") as f:
         json.dump(log, f, indent=2)
 
 
@@ -347,26 +368,42 @@ def main():
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
 
-    policy = PolicyWithValue(
-        load_causal_lm(SFT_DIR).to(DEVICE)
-    ).to(DEVICE)
+    if not DEBUG and os.path.exists(PPO_DIR):
+        old_dir = "checkpoints/ppo_bf16"
+
+        if os.path.exists(old_dir):
+            raise FileExistsError(
+                f"{old_dir} already exists. Rename or move it first."
+            )
+
+        os.rename(PPO_DIR, old_dir)
+        print("Previous PPO checkpoint moved to", old_dir)
+
+    policy_lm = load_causal_lm(SFT_DIR).float().to(DEVICE)
+
+    policy = PolicyWithValue(policy_lm).float().to(DEVICE)
 
     if GRAD_CKPT:
         policy.lm.gradient_checkpointing_enable()
 
-    policy.lm.config.use_cache = True
+    policy.lm.config.use_cache = False
 
-    ref = load_causal_lm(SFT_DIR).to(DEVICE).eval()
+    ref = load_causal_lm(SFT_DIR).float().to(DEVICE).eval()
 
     for param in ref.parameters():
         param.requires_grad_(False)
 
-    rm = load_reward_model().to(DEVICE).eval()
+    rm = load_reward_model().float().to(DEVICE).eval()
 
     for param in rm.parameters():
         param.requires_grad_(False)
 
     print("Device:", DEVICE)
+    print("Policy dtype:", next(policy.lm.parameters()).dtype)
+    print("Value head dtype:", next(policy.value_head.parameters()).dtype)
+    print("Reference dtype:", next(ref.parameters()).dtype)
+    print("Reward model dtype:", next(rm.parameters()).dtype)
+    print("Gradient checkpointing:", GRAD_CKPT)
 
     optimizer = torch.optim.AdamW(
         policy.parameters(),
@@ -376,12 +413,15 @@ def main():
     prompts = get_prompts(tok)
     random.Random(config.SEED).shuffle(prompts)
 
-    assert len(prompts) >= ITERATIONS * PROMPTS_PER_ROLLOUT
+    assert len(prompts) >= RUN_ITERATIONS * PROMPTS_PER_ROLLOUT
 
     log = []
     start_time = time.time()
 
-    for iteration in range(ITERATIONS):
+    first_param = next(policy.lm.parameters())
+    first_param_before = first_param.detach().clone()
+
+    for iteration in range(RUN_ITERATIONS):
         start = iteration * PROMPTS_PER_ROLLOUT
         end = start + PROMPTS_PER_ROLLOUT
         batch_prompts = prompts[start:end]
@@ -400,12 +440,23 @@ def main():
             batch
         )
 
+        if iteration == 0:
+            weight_change = (
+                first_param.detach() - first_param_before
+            ).abs().max().item()
+
+            print(
+                f"First parameter max change: {weight_change:.8e}"
+            )
+
         record = {
             "iter": iteration + 1,
             "reward": rollout_stats["score"],
             "kl": rollout_stats["kl"],
             "length": rollout_stats["length"],
             "clip_frac": update_stats["clip_fraction"],
+            "epoch0_clip": update_stats["epoch0_clip"],
+            "ratio_dev": update_stats["ratio_dev"],
             "policy_loss": update_stats["policy_loss"],
             "value_loss": update_stats["value_loss"],
             "entropy": update_stats["entropy"],
@@ -415,11 +466,13 @@ def main():
         log.append(record)
 
         print(
-            f"[{iteration + 1}/{ITERATIONS}] "
+            f"[{iteration + 1}/{RUN_ITERATIONS}] "
             f"reward={record['reward']:.3f} "
             f"kl={record['kl']:.3f} "
             f"length={record['length']:.1f} "
             f"clip={record['clip_frac']:.3f} "
+            f"epoch0_clip={record['epoch0_clip']:.3f} "
+            f"ratio_dev={record['ratio_dev']:.2e} "
             f"policy_loss={record['policy_loss']:.4f} "
             f"value_loss={record['value_loss']:.4f} "
             f"entropy={record['entropy']:.3f} "
@@ -437,6 +490,11 @@ def main():
     save_policy(policy, tok)
 
     print("Saved policy to", PPO_DIR)
+
+    if DEBUG:
+        print("Debug log saved to results/ppo_log_fp32_debug.json")
+    else:
+        print("FP32 log saved to results/ppo_log_fp32.json")
 
 
 if __name__ == "__main__":
