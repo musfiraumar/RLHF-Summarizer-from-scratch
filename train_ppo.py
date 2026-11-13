@@ -11,7 +11,9 @@ import torch.nn as nn
 from pathlib import Path
 import sys
 
-sys.path.insert(0, str(Path(__file__).resolve().parent / "starter"))
+ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "starter"))
 
 from transformers import AutoTokenizer
 from starter import config
@@ -38,13 +40,10 @@ N_HALVES = 2
 PROMPT_MAX_LEN = 448
 GRAD_CKPT = True
 
-DEBUG = "--debug" in sys.argv
-RUN_ITERATIONS = 3 if DEBUG else ITERATIONS
-
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 SFT_DIR = "checkpoints/sft"
-PPO_DIR = "checkpoints/ppo_debug" if DEBUG else "checkpoints/ppo"
+PPO_DIR = "checkpoints/ppo"
 
 
 def get_prompts(tok):
@@ -346,12 +345,7 @@ def save_policy(policy, tok):
 def save_log(log):
     os.makedirs("results", exist_ok=True)
 
-    filename = (
-        "results/ppo_log_fp32_debug.json"
-        if DEBUG else "results/ppo_log_fp32.json"
-    )
-
-    with open(filename, "w") as f:
+    with open("results/ppo_log_fp32.json", "w") as f:
         json.dump(log, f, indent=2)
 
 
@@ -368,7 +362,7 @@ def main():
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
 
-    if not DEBUG and os.path.exists(PPO_DIR):
+    if os.path.exists(PPO_DIR):
         old_dir = "checkpoints/ppo_bf16"
 
         if os.path.exists(old_dir):
@@ -413,15 +407,12 @@ def main():
     prompts = get_prompts(tok)
     random.Random(config.SEED).shuffle(prompts)
 
-    assert len(prompts) >= RUN_ITERATIONS * PROMPTS_PER_ROLLOUT
+    assert len(prompts) >= ITERATIONS * PROMPTS_PER_ROLLOUT
 
     log = []
     start_time = time.time()
 
-    first_param = next(policy.lm.parameters())
-    first_param_before = first_param.detach().clone()
-
-    for iteration in range(RUN_ITERATIONS):
+    for iteration in range(ITERATIONS):
         start = iteration * PROMPTS_PER_ROLLOUT
         end = start + PROMPTS_PER_ROLLOUT
         batch_prompts = prompts[start:end]
@@ -440,15 +431,6 @@ def main():
             batch
         )
 
-        if iteration == 0:
-            weight_change = (
-                first_param.detach() - first_param_before
-            ).abs().max().item()
-
-            print(
-                f"First parameter max change: {weight_change:.8e}"
-            )
-
         record = {
             "iter": iteration + 1,
             "reward": rollout_stats["score"],
@@ -466,7 +448,7 @@ def main():
         log.append(record)
 
         print(
-            f"[{iteration + 1}/{RUN_ITERATIONS}] "
+            f"[{iteration + 1}/{ITERATIONS}] "
             f"reward={record['reward']:.3f} "
             f"kl={record['kl']:.3f} "
             f"length={record['length']:.1f} "
@@ -490,11 +472,7 @@ def main():
     save_policy(policy, tok)
 
     print("Saved policy to", PPO_DIR)
-
-    if DEBUG:
-        print("Debug log saved to results/ppo_log_fp32_debug.json")
-    else:
-        print("FP32 log saved to results/ppo_log_fp32.json")
+    print("FP32 log saved to results/ppo_log_fp32.json")
 
 
 if __name__ == "__main__":
