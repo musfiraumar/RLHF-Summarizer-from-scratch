@@ -71,7 +71,7 @@ train_loader = DataLoader(
     train_data,
     batch_size=BATCH_SIZE,
     shuffle=True,
-    collate_fn=collate_pref,
+    collate_fn=lambda batch: collate_pref(batch, tok.pad_token_id),
     drop_last=True
 )
 
@@ -79,7 +79,7 @@ val_loader = DataLoader(
     val_data,
     batch_size=MICRO_BATCH_SIZE,
     shuffle=False,
-    collate_fn=collate_pref
+    collate_fn=lambda batch: collate_pref(batch, tok.pad_token_id)
 )
 
 
