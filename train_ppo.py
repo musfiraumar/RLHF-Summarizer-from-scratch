@@ -2,7 +2,6 @@
 import os
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
-import argparse
 import json
 import random
 import time
@@ -27,9 +26,11 @@ BETA_KL = 0.05
 C_V = 0.1
 C_H = 0.01
 GAMMA = 1.0
+
 PPO_EPOCHS = 4
 LR = 1e-5
 MAX_GRAD_NORM = 1.0
+
 PROMPTS_PER_ROLLOUT = 16
 ITERATIONS = 200
 MAX_NEW_TOKENS = 48
@@ -218,35 +219,23 @@ def rollout(policy, ref, rm, tok, prompts):
         "returns": returns
     }
 
-    samples = [
-        (
-            prompts[i][-150:],
-            tok.decode(
-                generated[i, :gen_len[i]],
-                skip_special_tokens=True
-            )
-        )
-        for i in range(min(3, len(prompts)))
-    ]
-
-    return batch, stats, samples
+    return batch, stats
 
 
 def ppo_update(policy, optimizer, batch):
     batch_size = batch["ids"].size(0)
     token_count = batch["summary"].sum()
-    token_count_value = token_count.item()
 
-    halves = torch.arange(batch_size, device=DEVICE).chunk(N_HALVES)
+    halves = torch.arange(
+        batch_size,
+        device=DEVICE
+    ).chunk(N_HALVES)
 
     stats = {
         "policy_loss": 0.0,
         "value_loss": 0.0,
         "entropy": 0.0,
-        "clip_fraction": 0.0,
-        "first_epoch_ratio_dev": 0.0,
-        "first_epoch_clip_fraction": 0.0,
-        "first_epoch_ratio_samples": []
+        "clip_fraction": 0.0
     }
 
     policy.train()
@@ -254,7 +243,7 @@ def ppo_update(policy, optimizer, batch):
     for epoch in range(PPO_EPOCHS):
         optimizer.zero_grad(set_to_none=True)
 
-        for half_index, indices in enumerate(halves):
+        for indices in halves:
             length = int(batch["mask"][indices].sum(1).max())
 
             ids = batch["ids"][indices, :length]
@@ -286,7 +275,9 @@ def ppo_update(policy, optimizer, batch):
                 ((values - returns) ** 2) * summary
             ).sum() / token_count
 
-            entropy_mean = (entropy * summary).sum() / token_count
+            entropy_mean = (
+                entropy * summary
+            ).sum() / token_count
 
             loss = (
                 policy_loss
@@ -313,38 +304,11 @@ def ppo_update(policy, optimizer, batch):
                     (ratio - 1).abs() > CLIP_EPS
                 ).float()
 
-                half_clip_fraction = (
-                    (clipped_tokens * summary).sum().item()
-                    / token_count_value
-                )
-
                 stats["clip_fraction"] += (
-                    half_clip_fraction / PPO_EPOCHS
+                    (clipped_tokens * summary).sum().item()
+                    / token_count.item()
+                    / PPO_EPOCHS
                 )
-
-                if epoch == 0:
-                    ratio_dev = (
-                        (ratio - 1).abs() * summary
-                    ).max().item()
-
-                    stats["first_epoch_ratio_dev"] = max(
-                        stats["first_epoch_ratio_dev"],
-                        ratio_dev
-                    )
-
-                    stats["first_epoch_clip_fraction"] += (
-                        half_clip_fraction
-                    )
-
-                    if half_index == 0:
-                        selected_ratios = ratio[summary > 0][:5]
-
-                        stats["first_epoch_ratio_samples"] = (
-                            selected_ratios.detach().cpu().tolist()
-                        )
-
-        if epoch == 0:
-            stats["first_epoch_clip_fraction"] /= 1.0
 
         torch.nn.utils.clip_grad_norm_(
             policy.parameters(),
@@ -371,12 +335,6 @@ def save_log(log):
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--debug", action="store_true")
-    args = parser.parse_args()
-
-    iterations = 3 if args.debug else ITERATIONS
-
     random.seed(config.SEED)
     np.random.seed(config.SEED)
     torch.manual_seed(config.SEED)
@@ -409,9 +367,6 @@ def main():
         param.requires_grad_(False)
 
     print("Device:", DEVICE)
-    print("Policy dtype:", next(policy.lm.parameters()).dtype)
-    print("Reference dtype:", next(ref.parameters()).dtype)
-    print("Gradient checkpointing:", GRAD_CKPT)
 
     optimizer = torch.optim.AdamW(
         policy.parameters(),
@@ -421,55 +376,23 @@ def main():
     prompts = get_prompts(tok)
     random.Random(config.SEED).shuffle(prompts)
 
-    assert len(prompts) >= iterations * PROMPTS_PER_ROLLOUT
+    assert len(prompts) >= ITERATIONS * PROMPTS_PER_ROLLOUT
 
     log = []
     start_time = time.time()
 
-    for iteration in range(iterations):
+    for iteration in range(ITERATIONS):
         start = iteration * PROMPTS_PER_ROLLOUT
         end = start + PROMPTS_PER_ROLLOUT
         batch_prompts = prompts[start:end]
 
-        batch, rollout_stats, samples = rollout(
+        batch, rollout_stats = rollout(
             policy,
             ref,
             rm,
             tok,
             batch_prompts
         )
-
-        if iteration == 0:
-            with torch.no_grad():
-                policy_logits, _ = policy(
-                    batch["ids"],
-                    batch["mask"]
-                )
-
-                ref_hidden = get_hidden(
-                    ref,
-                    batch["ids"],
-                    batch["mask"]
-                )
-
-                ref_logits = ref.lm_head(ref_hidden)[:, :-1].float()
-
-                policy_logp, _ = logp_and_entropy(
-                    policy_logits,
-                    batch["ids"]
-                )
-
-                ref_logp, _ = logp_and_entropy(
-                    ref_logits,
-                    batch["ids"]
-                )
-
-                max_diff = (
-                    policy_logp - ref_logp
-                ).abs().max().item()
-
-                print("Initial max log-prob difference:", f"{max_diff:.8e}")
-                print("Initial KL:", f"{rollout_stats['kl']:.8e}")
 
         update_stats = ppo_update(
             policy,
@@ -483,9 +406,6 @@ def main():
             "kl": rollout_stats["kl"],
             "length": rollout_stats["length"],
             "clip_frac": update_stats["clip_fraction"],
-            "first_epoch_clip_frac": update_stats["first_epoch_clip_fraction"],
-            "first_epoch_ratio_dev": update_stats["first_epoch_ratio_dev"],
-            "first_epoch_ratio_samples": update_stats["first_epoch_ratio_samples"],
             "policy_loss": update_stats["policy_loss"],
             "value_loss": update_stats["value_loss"],
             "entropy": update_stats["entropy"],
@@ -495,33 +415,16 @@ def main():
         log.append(record)
 
         print(
-            f"[{iteration + 1}/{iterations}] "
+            f"[{iteration + 1}/{ITERATIONS}] "
             f"reward={record['reward']:.3f} "
             f"kl={record['kl']:.3f} "
             f"length={record['length']:.1f} "
             f"clip={record['clip_frac']:.3f} "
-            f"epoch0_clip={record['first_epoch_clip_frac']:.3f} "
-            f"ratio_dev={record['first_epoch_ratio_dev']:.2e} "
             f"policy_loss={record['policy_loss']:.4f} "
             f"value_loss={record['value_loss']:.4f} "
             f"entropy={record['entropy']:.3f} "
             f"({record['minutes']:.1f} min)"
         )
-
-        if iteration == 0:
-            print(
-                "First epoch sample ratios:",
-                record["first_epoch_ratio_samples"]
-            )
-
-        if (iteration + 1) % 10 == 0 or args.debug:
-            for prompt, summary in samples[:2]:
-                print(
-                    "...",
-                    prompt.replace("\n", " "),
-                    "->",
-                    summary
-                )
 
         if (iteration + 1) % 50 == 0:
             save_policy(policy, tok)
@@ -531,10 +434,9 @@ def main():
             torch.cuda.empty_cache()
 
     save_log(log)
+    save_policy(policy, tok)
 
-    if not args.debug:
-        save_policy(policy, tok)
-        print("Saved policy to", PPO_DIR)
+    print("Saved policy to", PPO_DIR)
 
 
 if __name__ == "__main__":
