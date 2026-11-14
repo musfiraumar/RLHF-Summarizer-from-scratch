@@ -1,0 +1,71 @@
+{
+  "device": "cuda",
+  "gpu": "Tesla T4",
+  "train_pairs": 20000,
+  "validation_pairs": 1000,
+  "policy_dtype": "torch.float32",
+  "reference_dtype": "torch.float32",
+  "trainable_reference_parameters": 0,
+  "initial_dpo_loss": 0.6931471824645996,
+  "baseline_validation_accuracy": 0.0,
+  "eval_interval": 250,
+  "history": [
+    {
+      "step": 250,
+      "train_loss": 0.6645,
+      "validation_accuracy": 0.594
+    },
+    {
+      "step": 500,
+      "train_loss": 0.6457,
+      "validation_accuracy": 0.584
+    },
+    {
+      "step": 750,
+      "train_loss": 0.6546,
+      "validation_accuracy": 0.593
+    },
+    {
+      "step": 1000,
+      "train_loss": 0.6425,
+      "validation_accuracy": 0.593
+    },
+    {
+      "step": 1250,
+      "train_loss": 0.6382,
+      "validation_accuracy": 0.585
+    },
+    {
+      "step": 1500,
+      "train_loss": 0.6445,
+      "validation_accuracy": 0.598
+    },
+    {
+      "step": 1750,
+      "train_loss": 0.6233,
+      "validation_accuracy": 0.603
+    },
+    {
+      "step": 2000,
+      "train_loss": 0.6296,
+      "validation_accuracy": 0.606
+    },
+    {
+      "step": 2250,
+      "train_loss": 0.6158,
+      "validation_accuracy": 0.619
+    },
+    {
+      "step": 2500,
+      "train_loss": 0.6096,
+      "validation_accuracy": 0.609
+    }
+  ],
+  "final_train_loss": 0.6096371201574803,
+  "final_validation_accuracy": 0.609,
+  "training_time_seconds": 12342.6,
+  "checkpoints": {
+    "partial": "checkpoints/dpo_partial",
+    "final": "checkpoints/dpo"
+  }
+}

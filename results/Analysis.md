@@ -1,4 +1,3 @@
-
 ## 7.1 Reward model accuracy and mistakes
 
 The reward model gets 53.4% of the 1,000 validation pairs right. Before training it was at 49.7%. The training loss never moved off about 0.691 over the 2,500 steps, and chance level is ln 2 = 0.693, so it basically did not learn. With 1,000 pairs the 95% interval is about plus or minus 3 points, which puts 53.4% only just above a coin flip.
@@ -43,15 +42,31 @@ The KL values here are not comparable with the 5 to 6 nats in the training log, 
 
 PPO's mean reward is 0.043 higher than SFT's and its summaries are about 9 tokens shorter, but it wins on only 52.3% of posts. With 300 posts the 95% interval is about plus or minus 5.7 points, so 52.3% (and DPO's 48.3%) cannot be told apart from 50%. DPO went the other way: its summaries got longer (44 tokens, close to the 48-token limit), its reward model score is the lowest of the three, and its ROUGE-L is the lowest. The reward model seems to dislike long outputs, which fits the negative reward and length correlation seen during PPO.
 
-So is a higher reward model score the same as a better summary? In this run, no, or at least there is no evidence that it is. The reward model is close to chance, so a gap of 0.04 in its score says almost nothing about quality. PPO's gain comes together with shorter outputs and a lower ROUGE-L against the reference summaries, and DPO's lower score comes together with longer outputs. Both look like the score tracking length more than quality. The human evaluation is what should settle this:
+So is a higher reward model score the same as a better summary? In this run, no, or at least there is no evidence that it is. The reward model is close to chance, so a gap of 0.04 in its score says almost nothing about quality. PPO's gain comes together with shorter outputs and a lower ROUGE-L against the reference summaries, and DPO's lower score comes together with longer outputs. Both look like the score tracking length more than quality. The human evaluation is what should settle this.
 
-| comparison (300 posts) | human win rate | reward-model win rate |
-|---|---:|---:|
-| PPO vs SFT | [TODO] | 52.3% |
-| DPO vs SFT | [TODO] | 48.3% |
-| PPO vs DPO | [TODO] | [TODO] |
+Two members each looked at 30 posts (fixed seed 42, drawn from the posts where the three summaries differ). For each post the SFT, PPO and DPO summaries were shown in random order without saying which model wrote which, and each member independently picked the best one (`results/human_eval.csv`, key in `results/human_eval_key.csv`). Each pick counts for one method, so this is a best-of-three choice and not a pairwise win rate:
 
-If humans do not prefer PPO over SFT even though its reward model score is higher, that is direct evidence the score and quality came apart. If they do prefer it, the likely reason is that shorter summaries are tighter, and it is worth checking how often the shorter ones dropped an important fact. The reverse question applies to DPO: humans may like its longer summaries even though the reward model does not.
+| picked as best (30 posts) | Member 1 | Member 2 | both members (60 picks) |
+|---|---:|---:|---:|
+| SFT | 11 (36.7%) | 13 (43.3%) | 24 (40.0%) |
+| PPO | 14 (46.7%) | 9 (30.0%) | 23 (38.3%) |
+| DPO | 5 (16.7%) | 8 (26.7%) | 13 (21.7%) |
+
+The two members chose the same summary on 15 of the 30 posts (50.0%). Picking at random among three summaries would agree about 33% of the time, and the kappa computed from these counts is about 0.24, so agreement is only fair. With 30 posts the 95% interval on the 50% is roughly plus or minus 18 points.
+
+PPO and SFT are not separated. The members disagree about which is better (Member 1 picked PPO 14 times to SFT's 11, Member 2 picked SFT 13 times to PPO's 9) and together they picked SFT 24 times and PPO 23 times. So the reward model's 0.043 higher mean score for PPO did not turn into a human preference. That fits the earlier point that a gap this small in a near-chance reward model says almost nothing about quality, but 30 posts could only show a large difference, so this does not prove PPO and SFT are equal.
+
+DPO was picked least by both members: 5 and 8 times, 13 of 60 picks (21.7%) against the 33% expected if all three were equal. That is suggestive and not conclusive (about 1.9 standard errors below expectation, and the two members rated the same posts). Here the humans and the reward model agree, since DPO also had the lowest reward model score. One thing that could explain it is length: DPO summaries hit the 48-token limit on 190 of the 300 evaluation posts (63%), against 30 for SFT and 4 for PPO, so many of them are cut off or run on. The picks do not say why the members preferred the others, and I did not ask them, so this is a possible reason and not a result.
+
+The comparison table from the plan is therefore replaced by the counts above. The reward model's own win rates on all 300 posts were:
+
+| comparison (300 posts) | reward-model win rate |
+|---|---:|
+| PPO vs SFT | 52.3% |
+| DPO vs SFT | 48.3% |
+| PPO vs DPO | 58.3% (175/300) |
+
+The reward model and the members agree on the ranking of DPO and disagree on PPO against SFT, where the reward model has a small lead and the humans see none.
 
 ## 7.3 The role of beta_KL
 
@@ -85,9 +100,13 @@ On the same 1,000 validation pairs:
 |---|---:|
 | reward model, untrained | 49.7% |
 | reward model, final | 53.4% |
-| DPO implicit reward, final | [TODO] (see `dpo_log.json`) |
+| DPO implicit reward, final | 60.9% (see `dpo_log.json`) |
 
-The DPO accuracy is still missing, but the evaluation already shows how far DPO moved: its greedy summaries are about 14 tokens longer than SFT's and it is 4.0 nats from the reference. Once the DPO number is in: DPO trains the whole language model directly on the preference loss, so its implicit reward is usually at least as accurate as a separate reward model of the same size. If it is clearly above 53.4%, the same data gave a better signal when used through the policy's log ratios. If it is also around 50 to 55%, the limit is the noisy labels and the small model, not the method.
+DPO's implicit reward gets 60.9% of the 1,000 validation pairs right, against 53.4% for the separate reward model. With 1,000 pairs the 95% interval is about plus or minus 3 points, so the 7.5 point gap is clear. Accuracy was already about 59% at step 250, rose slowly to a peak of 61.9% at step 2250 and ended at 60.9%, while the train loss only fell from 0.693 to 0.610. So the same preference data gave a better signal when used through the policy's log ratios than through a separate reward model of the same size. The absolute level is still modest. About 4 in 10 validation pairs are ranked the wrong way, which fits noisy labels and a small model, and the method alone does not remove that limit.
+
+Accuracy on preference pairs does not mean better summaries, though. The evaluation shows how far DPO moved: its greedy summaries are about 14 tokens longer than SFT's and it is 4.0 nats from the reference. A policy can rank the pairs well and still drift toward longer outputs, which is what happened here.
+
+One note on the log: the baseline validation accuracy before training is printed as 0.0. At that point the policy equals the reference, so every margin is exactly zero, and a strict margin > 0 test counts none of them as correct. It is an artefact of the comparison and not a real accuracy; chance is about 50%.
 
 ## 7.6 Memory, time, and which method I would use
 
@@ -100,8 +119,8 @@ Time on the Tesla T4:
 | SFT | 89.5 min |
 | reward model (2,500 steps) | 129.7 min |
 | PPO (200 iterations, 16 prompts each) | 60.8 min |
-| DPO (2,500 steps) | [TODO] |
+| DPO (2,500 steps) | 205.7 min |
 
-The PPO route is SFT + reward model + PPO, about 280 minutes. The DPO route is SFT + DPO. PPO also has to generate inside the loop, which is part of why 3,200 rollouts took an hour even at this size.
+The PPO route is SFT + reward model + PPO, about 280 minutes. The DPO route is SFT + DPO, about 295 minutes, so DPO was not faster in wall-clock time here. Its 2,500 steps each need forward passes through both the policy and the reference on two sequences, and they cost more than the whole PPO loop. The saving is in the number of stages and models, not in training time. PPO also has to generate inside the loop, which is part of why 3,200 rollouts took an hour even at this size.
 
-For a new project I would still lean toward DPO, but the evidence from this repo for it is weaker than I first thought, so I will say what it does and does not show. On the reward model's own metric PPO looks slightly better than DPO (mean reward -0.513 against -0.713, win rate 52.3% against 48.3%), and neither win rate is distinguishable from 50%. That metric is not trustworthy, because the reward model is at 53.4% accuracy and seems to penalise length, which DPO increased. So these numbers cannot say which method produced better summaries. What I can say is about cost and risk. The reward model was the weak stage: it gave PPO a signal close to noise, and PPO paid a large KL cost during training for a +0.025 reward change and shorter outputs. DPO skips that stage, needs one fewer model in memory, has no sampling loop or value function, and has fewer hyperparameters to tune (beta and learning rate, against beta_KL, clip, value and entropy coefficients and rollout size). It is also easier to run on a single T4. The cost to watch is that DPO drifted toward longer outputs here, so a length check or a length-normalised loss would be needed in a real project. I would go back to PPO only if I had a reward that is accurate and cheap to query, such as a verifiable checker or a strong reward model, or if on-policy exploration mattered, since DPO only learns from the fixed pairs. The human-evaluation result should go here: if humans prefer DPO's summaries over PPO's, that supports the choice; if not, the choice rests on cost and simplicity alone.
+For a new project I would start with DPO for its cost and simplicity, but the human evaluation weakens the case for DPO as it was trained here, so I will say what the evidence does and does not show. On the reward model's own metric PPO looks slightly better than DPO (mean reward -0.513 against -0.713, win rate 52.3% against 48.3%), and neither win rate is distinguishable from 50%. That metric is not trustworthy, because the reward model is at 53.4% accuracy and seems to penalise length, which DPO increased. So these numbers cannot say which method produced better summaries. What I can say is about cost and risk. The reward model was the weak stage: it gave PPO a signal close to noise, and PPO paid a large KL cost during training for a +0.025 reward change and shorter outputs. DPO skips that stage, needs one fewer model in memory, has no sampling loop or value function, reached a higher accuracy on the preference pairs than the reward model did (60.9% against 53.4%), and has fewer hyperparameters to tune (beta and learning rate, against beta_KL, clip, value and entropy coefficients and rollout size). It is also easier to run on a single T4, although it was not faster in total time (about 295 minutes against 280). The cost to watch is that DPO drifted toward longer outputs here, so a length check or a length-normalised loss would be needed in a real project. I would go back to PPO only if I had a reward that is accurate and cheap to query, such as a verifiable checker or a strong reward model, or if on-policy exploration mattered, since DPO only learns from the fixed pairs. The human evaluation does not support DPO's summaries: the two members picked DPO as best on 13 of 60 picks, against 23 for PPO and 24 for SFT, so the choice rests on cost and simplicity alone and not on better output. Together with the 63% of DPO summaries that hit the length limit, it means a real project would need a length check or a length-normalised loss, or a lower beta or fewer steps, before DPO could be trusted. With 30 posts and two members this is a small study, so I would repeat it with more posts and members before deciding.
